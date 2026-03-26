@@ -18921,7 +18921,7 @@ var require_core = __commonJS({
 Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
     }
     exports2.getBooleanInput = getBooleanInput;
-    function setOutput(name, value) {
+    function setOutput2(name, value) {
       const filePath = process.env["GITHUB_OUTPUT"] || "";
       if (filePath) {
         return file_command_1.issueFileCommand("OUTPUT", file_command_1.prepareKeyValueMessage(name, value));
@@ -18929,7 +18929,7 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
       process.stdout.write(os.EOL);
       command_1.issueCommand("set-output", { name }, utils_1.toCommandValue(value));
     }
-    exports2.setOutput = setOutput;
+    exports2.setOutput = setOutput2;
     function setCommandEcho(enabled) {
       command_1.issue("echo", enabled ? "on" : "off");
     }
@@ -25405,6 +25405,166 @@ function validateConcurrency(concurrency) {
   }
 }
 
+// src/CommitTuple.ts
+var CommitTuple = class _CommitTuple {
+  constructor(baseSha, prs = []) {
+    this.baseSha = baseSha;
+    this.prs = prs;
+  }
+  /**
+   * Parses a string of the format:
+   * commit-tuple-v0:52e81b...+2270:84de80...+skymp5-patches#4:256a2d...
+   */
+  static fromString(str) {
+    if (!str || str.trim() === "") {
+      throw new Error("CommitTuple string cannot be empty");
+    }
+    const versionPrefix = "commit-tuple-v0:";
+    if (!str.startsWith(versionPrefix)) {
+      throw new Error(`Invalid version or format. Expected string to start with "${versionPrefix}"`);
+    }
+    const payload = str.slice(versionPrefix.length);
+    const parts = payload.split("+");
+    const baseSha = parts[0];
+    const prs = [];
+    const prRegex = /^(?:([^#]+)#)?(\d+):([a-fA-F0-9]+)$/;
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i];
+      const match = part.match(prRegex);
+      if (!match) {
+        throw new Error(`Invalid PR format in CommitTuple string at part "${part}"`);
+      }
+      const repo = match.at(1);
+      const rawNumber = match.at(2);
+      const sha = match.at(3);
+      if (rawNumber === void 0) {
+        throw new Error(`Missing PR number in CommitTuple string at part "${part}"`);
+      }
+      if (sha === void 0) {
+        throw new Error(`Missing commit SHA in CommitTuple string at part "${part}"`);
+      }
+      const number = parseInt(rawNumber, 10);
+      if (isNaN(number)) {
+        throw new Error(`Invalid PR number "${rawNumber}" in CommitTuple string at part "${part}"`);
+      }
+      prs.push({ repo, number, sha });
+    }
+    return new _CommitTuple(baseSha, prs);
+  }
+  /**
+   * Converts the object back to a CommitTuple format string
+   */
+  toString() {
+    let result = `commit-tuple-v0:${this.baseSha}`;
+    for (const pr of this.prs) {
+      if (pr.repo) {
+        result += `+${pr.repo}#${pr.number}:${pr.sha}`;
+      } else {
+        result += `+${pr.number}:${pr.sha}`;
+      }
+    }
+    return result;
+  }
+};
+
+// src/gatherData.ts
+function sortByNumber(items) {
+  return items.sort((a, b) => a.number - b.number);
+}
+async function gatherData(options) {
+  const { repositories, baseSha, retries, concurrencyLimit, primaryRepo } = options;
+  const limit = pLimit(concurrencyLimit);
+  const MyOctokit = Octokit2.plugin(retry);
+  const octokitsByToken = /* @__PURE__ */ new Map();
+  function getOctokit(token) {
+    let octokit = octokitsByToken.get(token);
+    if (!octokit) {
+      octokit = new MyOctokit({ auth: token, request: { retries } });
+      octokitsByToken.set(token, octokit);
+    }
+    return octokit;
+  }
+  const gatheredRepos = [];
+  const mergeRequests = [];
+  for (const repoConfig of repositories) {
+    const { owner, repo, labels, token } = repoConfig;
+    const octokit = getOctokit(token);
+    console.log(`[gather] Repository: ${owner}/${repo}, Labels: ${labels.join(", ")}`);
+    let foundItems = [];
+    if (labels.length > 0) {
+      const query = `repo:${owner}/${repo} is:pr is:open ${labels.map((label) => `label:"${label}"`).join(" ")}`;
+      console.log(`[gather] Searching PRs: ${query}`);
+      const searchResult = await octokit.search.issuesAndPullRequests({ q: query });
+      foundItems = searchResult.data.items;
+    } else {
+      console.log("[gather] No labels supplied, skipping");
+    }
+    console.log(`[gather] Found ${foundItems.length} matching PRs`);
+    const prResults = await Promise.all(
+      foundItems.map(
+        (issue) => limit(async () => {
+          const [prResponse, commitResponse] = await Promise.all([
+            octokit.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: issue.number
+            }),
+            // We fetch commit details via the issue number indirectly:
+            // first get the PR to know the head SHA, then fetch the commit.
+            // To avoid a sequential dependency, we fetch the PR first,
+            // then the commit in a second pass below.
+            Promise.resolve(null)
+          ]);
+          return prResponse.data;
+        })
+      )
+    );
+    const prsWithCommits = await Promise.all(
+      sortByNumber(prResults).map(
+        (pr) => limit(async () => {
+          const commit = await octokit.rest.git.getCommit({
+            owner,
+            repo,
+            commit_sha: pr.head.sha
+          });
+          const gathered = {
+            number: pr.number,
+            title: pr.title,
+            user: { login: pr.user.login },
+            head: { ref: pr.head.ref, sha: pr.head.sha },
+            labels: pr.labels.map((l) => ({ name: l.name ?? "" })),
+            commitMessage: commit.data.message,
+            commitAuthor: commit.data.author.name,
+            commitAuthorDate: commit.data.author.date
+          };
+          return gathered;
+        })
+      )
+    );
+    console.log(`[gather] Gathered ${prsWithCommits.length} PRs from ${owner}/${repo}`);
+    gatheredRepos.push({
+      owner,
+      repo,
+      pullRequests: prsWithCommits
+    });
+    const isPrimary = primaryRepo ? repo === primaryRepo : gatheredRepos.length === 1;
+    for (const pr of prsWithCommits) {
+      mergeRequests.push({
+        repo: isPrimary ? void 0 : repo,
+        number: pr.number,
+        sha: pr.head.sha
+      });
+    }
+  }
+  const commitTuple = new CommitTuple(baseSha, mergeRequests);
+  console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
+  console.log(`[gather] Total PRs across all repos: ${mergeRequests.length}`);
+  return {
+    commitTuple,
+    repositories: gatheredRepos
+  };
+}
+
 // src/index.ts
 function sortPullRequests(pullRequests) {
   return pullRequests.sort((a, b) => a.number - b.number);
@@ -25534,14 +25694,18 @@ async function execWithRetry(command, args, path, numRetries) {
 async function run() {
   try {
     const MyOctokit = Octokit2.plugin(retry);
-    const octokitsByAuthToken = /* @__PURE__ */ new Map();
-    let buildMetadata = null;
     const generateBuildMetadata = core.getInput("generate-build-metadata");
     const repositories = JSON.parse(core.getInput("repositories"));
     let path = core.getInput("path");
     let retries = parseInt(core.getInput("retries"));
     let fetchRetries = parseInt(core.getInput("fetch-retries"));
     let concurrencyLimit = parseInt(core.getInput("concurrency-limit"));
+    const mode = core.getInput("mode") || "gather";
+    const commitTupleInput = core.getInput("commit-tuple") || "";
+    const baseRepo = core.getInput("base-repo") || "";
+    if (mode !== "gather" && mode !== "exact" && mode !== "gather_only") {
+      throw new Error(`Invalid mode: "${mode}". Must be "gather", "exact", or "gather_only".`);
+    }
     const minRetries = 1;
     const maxRetries = 8192;
     const defaultRetries = 5;
@@ -25567,9 +25731,73 @@ async function run() {
       await exec.exec('git config user.name "github-actions[bot]"', [], { cwd: path });
       await exec.exec('git config user.email "github-actions[bot]@users.noreply.github.com"', [], { cwd: path });
     }
+    let commitTuple;
+    if (mode === "exact") {
+      if (!commitTupleInput) {
+        throw new Error("commit-tuple input is required in exact mode");
+      }
+      commitTuple = CommitTuple.fromString(commitTupleInput);
+      console.log(`[exact] Parsed commit tuple: ${commitTuple.toString()}`);
+      console.log(`[exact] Base SHA: ${commitTuple.baseSha}, PRs: ${commitTuple.prs.length}`);
+    } else {
+      const firstRepo = repositories[0];
+      const firstRemoteUrl = `https://x-access-token:${firstRepo.token}@github.com/${firstRepo.owner}/${firstRepo.repo}.git`;
+      console.log(`[gather] Setting remote to first repo to read base SHA`);
+      await exec.exec("git remote set-url origin", [firstRemoteUrl], { cwd: path });
+      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+      const baseSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+      console.log(`[gather] Base SHA: ${baseSha}`);
+      const gatherResult = await gatherData({
+        repositories,
+        baseSha,
+        retries,
+        concurrencyLimit,
+        primaryRepo: baseRepo || void 0
+      });
+      commitTuple = gatherResult.commitTuple;
+      console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
+    }
+    core.setOutput("commit-tuple", commitTuple.toString());
+    if (mode === "gather_only") {
+      console.log(`[gather_only] Done. commit-tuple: ${commitTuple.toString()}`);
+      if (generateBuildMetadata === "true") {
+        const buildMetadata = { commitTuple: commitTuple.toString() };
+        const p = pathModule.normalize(`${path}/build-metadata.json`);
+        console.log("Writing build metadata to " + p);
+        fs.writeFileSync(p, JSON.stringify(buildMetadata, null, 2));
+      }
+      return;
+    }
+    {
+      const baseRepoConfig = baseRepo ? repositories.find((r) => `${r.owner}/${r.repo}` === baseRepo) ?? repositories[0] : repositories[0];
+      const verifyRemoteUrl = `https://x-access-token:${baseRepoConfig.token}@github.com/${baseRepoConfig.owner}/${baseRepoConfig.repo}.git`;
+      await exec.exec("git remote set-url origin", [verifyRemoteUrl], { cwd: path });
+      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+      const currentHead = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+      if (currentHead !== commitTuple.baseSha) {
+        throw new Error(
+          `Base SHA mismatch: commit tuple expects ${commitTuple.baseSha} but current HEAD is ${currentHead}. The base branch may have moved since the commit tuple was created.`
+        );
+      }
+      console.log(`[!] Base SHA verified: ${currentHead}`);
+    }
+    const octokitsByAuthToken = /* @__PURE__ */ new Map();
     for (const repository of repositories) {
-      const { repo, labels, token, owner } = repository;
-      console.log(`Repository: ${repo}, Labels: ${labels.join(", ")}`);
+      const { repo, token, owner } = repository;
+      const fullRepoName = `${owner}/${repo}`;
+      const isBaseRepo = baseRepo ? fullRepoName === baseRepo : false;
+      const isFirstRepo = repositories.indexOf(repository) === 0;
+      const matchingPrs = commitTuple.prs.filter((pr) => {
+        if (pr.repo) {
+          return pr.repo === repo;
+        }
+        return baseRepo ? isBaseRepo : isFirstRepo;
+      });
+      if (matchingPrs.length === 0) {
+        console.log(`[!] No PRs to merge for ${fullRepoName}, skipping`);
+        continue;
+      }
+      console.log(`[!] Processing ${fullRepoName}: ${matchingPrs.length} PRs to merge`);
       const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
       console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
       await exec.exec("git remote set-url origin", [remoteUrl], { cwd: path });
@@ -25580,38 +25808,32 @@ async function run() {
       console.log({ abbrevRef, baseCommitSha });
       const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
       octokitsByAuthToken.set(token, octokit);
-      console.log(`Obtained an Octokit instance with token ${token ? "***" : "undefined"}`);
-      console.log(`Num Octokit instances cached: ${octokitsByAuthToken.size}`);
-      let foundItems = [];
-      if (labels.length > 0) {
-        const query = `repo:${owner}/${repo} is:pr is:open ${labels.map((label) => `label:"${label}"`).join(" ")}`;
-        console.log("Searching for PRs with query:", query);
-        const searchResult = await octokit.search.issuesAndPullRequests({
-          q: query
-        });
-        foundItems = searchResult.data.items;
-      } else {
-        console.log("No labels supplied, not fetching any PRs");
-      }
-      console.log(`Found ${foundItems.length} PRs with required labels`);
-      const pullRequests = await Promise.all(foundItems.map(
-        (issue) => limit(() => octokit.rest.pulls.get({
-          owner,
-          repo,
-          pull_number: issue.number
-        }))
+      const prResponses = await Promise.all(matchingPrs.map(
+        (mr) => limit(async () => {
+          const res = await octokit.rest.pulls.get({
+            owner,
+            repo,
+            pull_number: mr.number
+          });
+          return { prData: res.data, targetSha: mr.sha };
+        })
       ));
-      const pullRequestsData = sortPullRequests(pullRequests.map((pr) => pr.data));
-      console.log(`Found ${pullRequestsData.length} open PRs with required labels`);
-      for (const pr of pullRequestsData) {
-        const prNumber = pr.number;
-        const prBranch = pr.head.ref;
-        const prAuthor = pr.user.login;
-        const prSha = pr.head.sha;
+      const sortedPrs = sortPullRequests(prResponses.map((r) => ({ number: r.prData.number, ...r })));
+      for (const entry of sortedPrs) {
+        const { prData, targetSha } = entry;
+        const prNumber = prData.number;
+        const prBranch = prData.head.ref;
+        const prAuthor = prData.user.login;
         console.log(`[!] Processing PR #${prNumber} from ${prAuthor} with branch ${prBranch}`);
         console.log(`[!] Fetching PR #${prNumber} from remote`);
         await execWithRetry("git", ["fetch", "origin", `pull/${prNumber}/head:${prBranch}`], path, fetchRetries);
-        console.log(`[!] Merging branch ${prBranch} (${prSha})`);
+        const currentTipSha = prData.head.sha;
+        if (currentTipSha !== targetSha) {
+          console.log(`[!] Current PR tip (${currentTipSha}) differs from target (${targetSha}). Fetching exact target...`);
+          await execWithRetry("git", ["fetch", "origin", targetSha], path, fetchRetries);
+        }
+        await exec.exec("git", ["update-ref", `refs/heads/${prBranch}`, targetSha], { cwd: path });
+        console.log(`[!] Merging branch ${prBranch} (target: ${targetSha})`);
         const gitMergeStdout = new streamBuffer.WritableStreamBuffer();
         const gitMergeStderr = new streamBuffer.WritableStreamBuffer();
         const gitMergeRes = await exec.exec(`git merge ${prBranch}`, [], {
@@ -25626,55 +25848,17 @@ async function run() {
           await handleMergeConflict(prNumber, stdout, stderr, path);
         }
       }
-      if (generateBuildMetadata === "true") {
-        if (buildMetadata === null) {
-          buildMetadata = {
-            runUrl: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
-            abbrevRef,
-            baseCommitSha,
-            refs_info: [],
-            prs: []
-          };
-        }
-        console.log("Generating build metadata");
-        for (const pr of pullRequestsData) {
-          buildMetadata.prs.push(pr);
-        }
-        const promises = pullRequestsData.map((pr) => limit(async () => {
-          const commit = await octokit.rest.git.getCommit({
-            owner,
-            repo,
-            commit_sha: pr.head.sha
-          });
-          return {
-            ref: pr.head.ref,
-            info: {
-              ref: pr.head.ref,
-              lastCommitSha: pr.head.sha,
-              lastCommitMessage: commit.data.message,
-              lastCommitAuthor: commit.data.author.name,
-              lastCommitAuthorDate: commit.data.author.date,
-              repoOwner: owner,
-              repoName: repo,
-              prNumber: pr.number,
-              prTitle: pr.title
-            }
-          };
-        }));
-        const results = await Promise.all(promises);
-        results.forEach((result) => {
-          console.log(`Fetched commit sha: ${result.info.lastCommitSha}`);
-          buildMetadata?.refs_info.push(result.info);
-        });
-      }
     }
-    if (buildMetadata === null) {
-      console.log("No build metadata to write");
-    } else {
+    if (generateBuildMetadata === "true") {
+      const buildMetadata = {
+        commitTuple: commitTuple.toString()
+      };
       console.log("Build metadata:", buildMetadata);
       const p = pathModule.normalize(`${path}/build-metadata.json`);
       console.log("Writing build metadata to " + p);
       fs.writeFileSync(p, JSON.stringify(buildMetadata, null, 2));
+    } else {
+      console.log("Build metadata generation skipped");
     }
   } catch (error) {
     console.error(error);

@@ -1,6 +1,18 @@
 name: 'Auto-Merge Action'
 description: 'Automatically checks out and merges pull requests from specified repositories with specified labels.'
 inputs:
+  mode:
+    description: "Mode of operation: 'gather' searches PRs by labels then merges, 'exact' merges from a provided commit-tuple, 'gather_only' searches PRs and outputs the commit-tuple without merging."
+    required: false
+    default: 'gather'
+  commit-tuple:
+    description: 'CommitTuple string for exact mode (e.g. commit-tuple-v0:<base_sha>+<pr>:<sha>+...).'
+    required: false
+    default: ''
+  base-repo:
+    description: 'Name of the primary repository (e.g. "skyrim-multiplayer/skymp"). PRs from this repo omit the repo prefix in the commit tuple.'
+    required: false
+    default: ''
   repositories:
     description: 'JSON string containing repositories and their corresponding labels to process.'
     required: true
@@ -29,6 +41,9 @@ inputs:
     description: 'Maximum number of concurrent API requests.'
     required: false
     default: '10'
+outputs:
+  commit-tuple:
+    description: 'The commit tuple string produced by gather or gather_only mode.'
 runs:
   using: 'node20'
   main: 'dist/index.js'
