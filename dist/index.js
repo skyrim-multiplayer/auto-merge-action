@@ -25731,6 +25731,11 @@ async function run() {
       await exec.exec('git config user.name "github-actions[bot]"', [], { cwd: path });
       await exec.exec('git config user.email "github-actions[bot]@users.noreply.github.com"', [], { cwd: path });
     }
+    await exec.exec(
+      "git",
+      ["config", "--local", "--unset-all", "http.https://github.com/.extraheader"],
+      { cwd: path, ignoreReturnCode: true }
+    );
     let commitTuple;
     if (mode === "exact") {
       if (!commitTupleInput) {

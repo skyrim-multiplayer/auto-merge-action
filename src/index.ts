@@ -222,6 +222,16 @@ async function run() {
       await exec.exec('git config user.email "github-actions[bot]@users.noreply.github.com"', [], { cwd: path });
     }
 
+    // Clear any extraheader credentials set by actions/checkout.
+    // actions/checkout persists an AUTHORIZATION header via http.<url>.extraheader
+    // that applies to all github.com requests. This overrides the per-repo
+    // token we embed in the remote URL, causing "Repository not found" errors
+    // when switching to repos the GITHUB_TOKEN doesn't have access to.
+    await exec.exec(
+      'git', ['config', '--local', '--unset-all', 'http.https://github.com/.extraheader'],
+      { cwd: path, ignoreReturnCode: true }
+    );
+
     // ── Step 1: Obtain the CommitTuple ──────────────────────────────────────
     let commitTuple: CommitTuple;
 
