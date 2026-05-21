@@ -184,6 +184,8 @@ async function run() {
     for (const repository of repositories) {
       if (repository.token) {
         core.setSecret(repository.token);
+      } else {
+        repository.token = globalToken;
       }
     }
 
@@ -255,7 +257,7 @@ async function run() {
     } else {
       // gather / gather_only mode: need baseSha from the first repo before calling gatherData
       const firstRepo = repositories[0];
-      const firstRemoteUrl = `https://x-access-token:${firstRepo.token || globalToken}@github.com/${firstRepo.owner}/${firstRepo.repo}.git`;
+      const firstRemoteUrl = `https://x-access-token:${firstRepo.token}@github.com/${firstRepo.owner}/${firstRepo.repo}.git`;
       console.log(`[gather] Setting remote to first repo to read base SHA`);
       await exec.exec('git remote set-url origin', [firstRemoteUrl], { cwd: path });
       await execWithRetry('git', ['fetch', 'origin'], path, fetchRetries);
@@ -268,7 +270,6 @@ async function run() {
         retries,
         concurrencyLimit,
         primaryRepo: baseRepo || undefined,
-        globalToken,
       });
       commitTuple = gatherResult.commitTuple;
       console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
@@ -295,7 +296,7 @@ async function run() {
       const baseRepoConfig = baseRepo
         ? repositories.find(r => `${r.owner}/${r.repo}` === baseRepo) ?? repositories[0]
         : repositories[0];
-      const verifyRemoteUrl = `https://x-access-token:${baseRepoConfig.token || globalToken}@github.com/${baseRepoConfig.owner}/${baseRepoConfig.repo}.git`;
+      const verifyRemoteUrl = `https://x-access-token:${baseRepoConfig.token}@github.com/${baseRepoConfig.owner}/${baseRepoConfig.repo}.git`;
       await exec.exec('git remote set-url origin', [verifyRemoteUrl], { cwd: path });
       await execWithRetry('git', ['fetch', 'origin'], path, fetchRetries);
       const currentHead = await execStdout('git', ['rev-parse', 'HEAD'], { cwd: path });
@@ -335,7 +336,7 @@ async function run() {
 
       console.log(`[!] Processing ${fullRepoName}: ${matchingPrs.length} PRs to merge`);
 
-      const remoteUrl = `https://x-access-token:${token || globalToken}@github.com/${owner}/${repo}.git`;
+      const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
       console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
       await exec.exec('git remote set-url origin', [remoteUrl], { cwd: path });
 

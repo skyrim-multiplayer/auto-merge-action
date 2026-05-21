@@ -45,7 +45,6 @@ export interface GatherOptions {
   retries: number;
   concurrencyLimit: number;
   primaryRepo?: string;
-  globalToken?: string;
 }
 
 function sortByNumber<T extends { number: number }>(items: T[]): T[] {
@@ -67,7 +66,6 @@ export async function gatherData(options: GatherOptions): Promise<GatherResult> 
     retries,
     concurrencyLimit,
     primaryRepo,
-    globalToken,
   } = options;
   const limit = pLimit(concurrencyLimit);
 
@@ -88,7 +86,7 @@ export async function gatherData(options: GatherOptions): Promise<GatherResult> 
 
   for (const repoConfig of repositories) {
     const { owner, repo, labels, token } = repoConfig;
-    const octokit = getOctokit(token || globalToken);
+    const octokit = getOctokit(token);
 
     console.log(`[gather] Repository: ${owner}/${repo}, Labels: ${labels.join(', ')}`);
 
