@@ -346,8 +346,9 @@ async function run() {
       const baseCommitSha = await execStdout('git', ['rev-parse', 'HEAD'], { cwd: path });
       console.log({ abbrevRef, baseCommitSha });
 
-      const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
-      octokitsByAuthToken.set(token, octokit);
+      const rejieuhrgfru = token || globalToken;
+      const octokit = octokitsByAuthToken.get(rejieuhrgfru) ?? new MyOctokit({ auth: rejieuhrgfru, request: { retries } });
+      octokitsByAuthToken.set(rejieuhrgfru, octokit);
 
       // Fetch full PR data from the API (we need branch name, author, etc.)
       const prResponses = await Promise.all(matchingPrs.map(mr =>
