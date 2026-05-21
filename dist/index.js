@@ -25403,7 +25403,14 @@ function sortByNumber(items) {
   return items.sort((a, b) => a.number - b.number);
 }
 async function gatherData(options) {
-  const { repositories, baseSha, retries, concurrencyLimit, primaryRepo } = options;
+  const {
+    repositories,
+    baseSha,
+    retries,
+    concurrencyLimit,
+    primaryRepo,
+    globalToken
+  } = options;
   const limit = pLimit(concurrencyLimit);
   const MyOctokit = Octokit2.plugin(retry);
   const octokitsByToken = /* @__PURE__ */ new Map();
@@ -25419,7 +25426,7 @@ async function gatherData(options) {
   const mergeRequests = [];
   for (const repoConfig of repositories) {
     const { owner, repo, labels, token } = repoConfig;
-    const octokit = getOctokit(token);
+    const octokit = getOctokit(token || globalToken);
     console.log(`[gather] Repository: ${owner}/${repo}, Labels: ${labels.join(", ")}`);
     let foundItems = [];
     if (labels.length > 0) {
@@ -25697,7 +25704,8 @@ async function run() {
         baseSha,
         retries,
         concurrencyLimit,
-        primaryRepo: baseRepo || void 0
+        primaryRepo: baseRepo || void 0,
+        globalToken
       });
       commitTuple = gatherResult.commitTuple;
       console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);

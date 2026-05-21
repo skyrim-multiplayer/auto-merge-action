@@ -45,6 +45,7 @@ export interface GatherOptions {
   retries: number;
   concurrencyLimit: number;
   primaryRepo?: string;
+  globalToken?: string;
 }
 
 function sortByNumber<T extends { number: number }>(items: T[]): T[] {
@@ -60,7 +61,14 @@ function sortByNumber<T extends { number: number }>(items: T[]): T[] {
  * the full metadata needed for merging and build-metadata generation.
  */
 export async function gatherData(options: GatherOptions): Promise<GatherResult> {
-  const { repositories, baseSha, retries, concurrencyLimit, primaryRepo } = options;
+  const {
+    repositories,
+    baseSha,
+    retries,
+    concurrencyLimit,
+    primaryRepo,
+    globalToken,
+  } = options;
   const limit = pLimit(concurrencyLimit);
 
   const MyOctokit = Octokit.plugin(retry);
@@ -80,7 +88,7 @@ export async function gatherData(options: GatherOptions): Promise<GatherResult> 
 
   for (const repoConfig of repositories) {
     const { owner, repo, labels, token } = repoConfig;
-    const octokit = getOctokit(token);
+    const octokit = getOctokit(token || globalToken);
 
     console.log(`[gather] Repository: ${owner}/${repo}, Labels: ${labels.join(', ')}`);
 

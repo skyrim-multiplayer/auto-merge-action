@@ -268,6 +268,7 @@ async function run() {
         retries,
         concurrencyLimit,
         primaryRepo: baseRepo || undefined,
+        globalToken,
       });
       commitTuple = gatherResult.commitTuple;
       console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
