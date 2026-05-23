@@ -177,6 +177,18 @@ async function run() {
 
     const generateBuildMetadata = core.getInput('generate-build-metadata');
     const repositories: Repository[] = JSON.parse(core.getInput('repositories'));
+    const globalToken: string = core.getInput('token');
+    if (globalToken) {
+      core.setSecret(globalToken);
+    }
+    for (const repository of repositories) {
+      if (repository.token) {
+        core.setSecret(repository.token);
+      } else {
+        repository.token = globalToken;
+      }
+    }
+
     let path: string = core.getInput('path');
     let retries = parseInt(core.getInput('retries'));
     let fetchRetries = parseInt(core.getInput('fetch-retries'));

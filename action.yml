@@ -17,6 +17,10 @@ inputs:
     description: 'JSON string containing repositories and their corresponding labels to process.'
     required: true
     default: '[]'
+  token:
+    description: 'Token to be used to check out the code. Can be overriden by per-repository token field.'
+    required: false
+    default: ${{ github.token }}
   path:
     description: 'Path to the repository to merge pull requests into.'
     required: true

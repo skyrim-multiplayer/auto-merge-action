@@ -60,7 +60,13 @@ function sortByNumber<T extends { number: number }>(items: T[]): T[] {
  * the full metadata needed for merging and build-metadata generation.
  */
 export async function gatherData(options: GatherOptions): Promise<GatherResult> {
-  const { repositories, baseSha, retries, concurrencyLimit, primaryRepo } = options;
+  const {
+    repositories,
+    baseSha,
+    retries,
+    concurrencyLimit,
+    primaryRepo,
+  } = options;
   const limit = pLimit(concurrencyLimit);
 
   const MyOctokit = Octokit.plugin(retry);
