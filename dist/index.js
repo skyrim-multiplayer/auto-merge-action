@@ -25567,105 +25567,120 @@ async function run() {
       await exec.exec('git config user.name "github-actions[bot]"', [], { cwd: path });
       await exec.exec('git config user.email "github-actions[bot]@users.noreply.github.com"', [], { cwd: path });
     }
-    for (const repository of repositories) {
-      const { repo, labels, token, owner } = repository;
-      console.log(`Repository: ${repo}, Labels: ${labels.join(", ")}`);
-      const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-      console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
-      await exec.exec("git remote set-url origin", [remoteUrl], { cwd: path });
-      console.log("[!] Fetching from new origin");
-      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
-      const abbrevRef = await execStdout("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
-      const baseCommitSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
-      console.log({ abbrevRef, baseCommitSha });
-      const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
-      octokitsByAuthToken.set(token, octokit);
-      console.log(`Obtained an Octokit instance with token ${token ? "***" : "undefined"}`);
-      console.log(`Num Octokit instances cached: ${octokitsByAuthToken.size}`);
-      let foundItems = [];
-      if (labels.length > 0) {
-        const query = `repo:${owner}/${repo} is:pr is:open ${labels.map((label) => `label:"${label}"`).join(" ")}`;
-        console.log("Searching for PRs with query:", query);
-        const searchResult = await octokit.search.issuesAndPullRequests({
-          q: query
-        });
-        foundItems = searchResult.data.items;
-      } else {
-        console.log("No labels supplied, not fetching any PRs");
-      }
-      console.log(`Found ${foundItems.length} PRs with required labels`);
-      const pullRequests = await Promise.all(foundItems.map(
-        (issue) => limit(() => octokit.rest.pulls.get({
-          owner,
-          repo,
-          pull_number: issue.number
-        }))
-      ));
-      const pullRequestsData = sortPullRequests(pullRequests.map((pr) => pr.data));
-      console.log(`Found ${pullRequestsData.length} open PRs with required labels`);
-      for (const pr of pullRequestsData) {
-        const prNumber = pr.number;
-        const prBranch = pr.head.ref;
-        const prAuthor = pr.user.login;
-        const prSha = pr.head.sha;
-        console.log(`[!] Processing PR #${prNumber} from ${prAuthor} with branch ${prBranch}`);
-        console.log(`[!] Fetching PR #${prNumber} from remote`);
-        await execWithRetry("git", ["fetch", "origin", `pull/${prNumber}/head:${prBranch}`], path, fetchRetries);
-        console.log(`[!] Merging branch ${prBranch} (${prSha})`);
-        const gitMergeStdout = new streamBuffer.WritableStreamBuffer();
-        const gitMergeStderr = new streamBuffer.WritableStreamBuffer();
-        const gitMergeRes = await exec.exec(`git merge ${prBranch}`, [], {
-          cwd: path,
-          ignoreReturnCode: true,
-          outStream: gitMergeStdout,
-          errStream: gitMergeStderr
-        });
-        if (gitMergeRes !== 0) {
-          const stdout = gitMergeStdout.getContentsAsString("utf8") || "";
-          const stderr = gitMergeStderr.getContentsAsString("utf8") || "";
-          await handleMergeConflict(prNumber, stdout, stderr, path);
+    let originalOriginUrl = null;
+    try {
+      originalOriginUrl = await execStdout("git", ["remote", "get-url", "origin"], { cwd: path });
+      console.log("[!] Saved original origin URL to restore after processing");
+    } catch {
+      originalOriginUrl = null;
+      console.log("[!] No existing origin remote found; nothing to restore afterwards");
+    }
+    try {
+      for (const repository of repositories) {
+        const { repo, labels, token, owner } = repository;
+        console.log(`Repository: ${repo}, Labels: ${labels.join(", ")}`);
+        const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+        console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
+        await exec.exec("git remote set-url origin", [remoteUrl], { cwd: path });
+        console.log("[!] Fetching from new origin");
+        await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+        const abbrevRef = await execStdout("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
+        const baseCommitSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+        console.log({ abbrevRef, baseCommitSha });
+        const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
+        octokitsByAuthToken.set(token, octokit);
+        console.log(`Obtained an Octokit instance with token ${token ? "***" : "undefined"}`);
+        console.log(`Num Octokit instances cached: ${octokitsByAuthToken.size}`);
+        let foundItems = [];
+        if (labels.length > 0) {
+          const query = `repo:${owner}/${repo} is:pr is:open ${labels.map((label) => `label:"${label}"`).join(" ")}`;
+          console.log("Searching for PRs with query:", query);
+          const searchResult = await octokit.search.issuesAndPullRequests({
+            q: query
+          });
+          foundItems = searchResult.data.items;
+        } else {
+          console.log("No labels supplied, not fetching any PRs");
         }
-      }
-      if (generateBuildMetadata === "true") {
-        if (buildMetadata === null) {
-          buildMetadata = {
-            runUrl: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
-            abbrevRef,
-            baseCommitSha,
-            refs_info: [],
-            prs: []
-          };
-        }
-        console.log("Generating build metadata");
-        for (const pr of pullRequestsData) {
-          buildMetadata.prs.push(pr);
-        }
-        const promises = pullRequestsData.map((pr) => limit(async () => {
-          const commit = await octokit.rest.git.getCommit({
+        console.log(`Found ${foundItems.length} PRs with required labels`);
+        const pullRequests = await Promise.all(foundItems.map(
+          (issue) => limit(() => octokit.rest.pulls.get({
             owner,
             repo,
-            commit_sha: pr.head.sha
+            pull_number: issue.number
+          }))
+        ));
+        const pullRequestsData = sortPullRequests(pullRequests.map((pr) => pr.data));
+        console.log(`Found ${pullRequestsData.length} open PRs with required labels`);
+        for (const pr of pullRequestsData) {
+          const prNumber = pr.number;
+          const prBranch = pr.head.ref;
+          const prAuthor = pr.user.login;
+          const prSha = pr.head.sha;
+          console.log(`[!] Processing PR #${prNumber} from ${prAuthor} with branch ${prBranch}`);
+          console.log(`[!] Fetching PR #${prNumber} from remote`);
+          await execWithRetry("git", ["fetch", "origin", `pull/${prNumber}/head:${prBranch}`], path, fetchRetries);
+          console.log(`[!] Merging branch ${prBranch} (${prSha})`);
+          const gitMergeStdout = new streamBuffer.WritableStreamBuffer();
+          const gitMergeStderr = new streamBuffer.WritableStreamBuffer();
+          const gitMergeRes = await exec.exec(`git merge ${prBranch}`, [], {
+            cwd: path,
+            ignoreReturnCode: true,
+            outStream: gitMergeStdout,
+            errStream: gitMergeStderr
           });
-          return {
-            ref: pr.head.ref,
-            info: {
+          if (gitMergeRes !== 0) {
+            const stdout = gitMergeStdout.getContentsAsString("utf8") || "";
+            const stderr = gitMergeStderr.getContentsAsString("utf8") || "";
+            await handleMergeConflict(prNumber, stdout, stderr, path);
+          }
+        }
+        if (generateBuildMetadata === "true") {
+          if (buildMetadata === null) {
+            buildMetadata = {
+              runUrl: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
+              abbrevRef,
+              baseCommitSha,
+              refs_info: [],
+              prs: []
+            };
+          }
+          console.log("Generating build metadata");
+          for (const pr of pullRequestsData) {
+            buildMetadata.prs.push(pr);
+          }
+          const promises = pullRequestsData.map((pr) => limit(async () => {
+            const commit = await octokit.rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: pr.head.sha
+            });
+            return {
               ref: pr.head.ref,
-              lastCommitSha: pr.head.sha,
-              lastCommitMessage: commit.data.message,
-              lastCommitAuthor: commit.data.author.name,
-              lastCommitAuthorDate: commit.data.author.date,
-              repoOwner: owner,
-              repoName: repo,
-              prNumber: pr.number,
-              prTitle: pr.title
-            }
-          };
-        }));
-        const results = await Promise.all(promises);
-        results.forEach((result) => {
-          console.log(`Fetched commit sha: ${result.info.lastCommitSha}`);
-          buildMetadata?.refs_info.push(result.info);
-        });
+              info: {
+                ref: pr.head.ref,
+                lastCommitSha: pr.head.sha,
+                lastCommitMessage: commit.data.message,
+                lastCommitAuthor: commit.data.author.name,
+                lastCommitAuthorDate: commit.data.author.date,
+                repoOwner: owner,
+                repoName: repo,
+                prNumber: pr.number,
+                prTitle: pr.title
+              }
+            };
+          }));
+          const results = await Promise.all(promises);
+          results.forEach((result) => {
+            console.log(`Fetched commit sha: ${result.info.lastCommitSha}`);
+            buildMetadata?.refs_info.push(result.info);
+          });
+        }
+      }
+    } finally {
+      if (originalOriginUrl) {
+        console.log("[!] Restoring original origin URL");
+        await exec.exec("git remote set-url origin", [originalOriginUrl], { cwd: path });
       }
     }
     if (buildMetadata === null) {

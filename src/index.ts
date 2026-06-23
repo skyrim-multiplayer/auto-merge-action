@@ -248,6 +248,19 @@ async function run() {
       await exec.exec('git config user.email "github-actions[bot]@users.noreply.github.com"', [], { cwd: path });
     }
 
+    // Capture the original origin URL so we can restore it afterwards. This action
+    // repoints origin at a token-authenticated URL to fetch PRs; without restoring
+    // it the token is left baked into .git/config and subsequent pushes break.
+    let originalOriginUrl: string | null = null;
+    try {
+      originalOriginUrl = await execStdout('git', ['remote', 'get-url', 'origin'], { cwd: path });
+      console.log('[!] Saved original origin URL to restore after processing');
+    } catch {
+      originalOriginUrl = null;
+      console.log('[!] No existing origin remote found; nothing to restore afterwards');
+    }
+
+    try {
     for (const repository of repositories) {
       const { repo, labels, token, owner } = repository;
       console.log(`Repository: ${repo}, Labels: ${labels.join(', ')}`);
@@ -368,6 +381,14 @@ async function run() {
           console.log(`Fetched commit sha: ${result.info.lastCommitSha}`);
           buildMetadata?.refs_info.push(result.info);
         });
+      }
+    }
+    } finally {
+      // Restore the original origin URL so we don't leave a token-authenticated
+      // remote (or a remote pointed at the last processed repo) behind.
+      if (originalOriginUrl) {
+        console.log('[!] Restoring original origin URL');
+        await exec.exec('git remote set-url origin', [originalOriginUrl], { cwd: path });
       }
     }
 
