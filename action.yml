@@ -49,5 +49,5 @@ outputs:
   commit-tuple:
     description: 'The commit tuple string produced by gather or gather_only mode.'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
