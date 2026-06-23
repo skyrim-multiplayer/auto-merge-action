@@ -172,6 +172,8 @@ async function execWithRetry(command: string, args: string[], path: string, numR
 }
 
 async function run() {
+  let originalOriginUrl: string | null = null;
+  let path = '';
   try {
     const MyOctokit = Octokit.plugin(retry);
 
@@ -189,7 +191,7 @@ async function run() {
       }
     }
 
-    let path: string = core.getInput('path');
+    path = core.getInput('path');
     let retries = parseInt(core.getInput('retries'));
     let fetchRetries = parseInt(core.getInput('fetch-retries'));
     let concurrencyLimit = parseInt(core.getInput('concurrency-limit'));
@@ -243,6 +245,15 @@ async function run() {
       'git', ['config', '--local', '--unset-all', 'http.https://github.com/.extraheader'],
       { cwd: path, ignoreReturnCode: true }
     );
+
+    // Capture the original origin URL so we can restore it afterwards. This action
+    // repoints origin at token-authenticated URLs to fetch PRs; without restoring it
+    // the last token-embedded URL is left baked into .git/config for later steps.
+    try {
+      originalOriginUrl = await execStdout('git', ['remote', 'get-url', 'origin'], { cwd: path });
+    } catch {
+      originalOriginUrl = null;
+    }
 
     // ── Step 1: Obtain the CommitTuple ──────────────────────────────────────
     let commitTuple: CommitTuple;
@@ -420,6 +431,10 @@ async function run() {
   } catch (error) {
     console.error(error);
     core.setFailed(`Action failed with error: ${error}`);
+  } finally {
+    if (originalOriginUrl && path) {
+      await exec.exec('git remote set-url origin', [originalOriginUrl], { cwd: path });
+    }
   }
 }
 
