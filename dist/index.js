@@ -25698,6 +25698,8 @@ async function execWithRetry(command, args, path, numRetries) {
   }
 }
 async function run() {
+  let originalOriginUrl = null;
+  let path = "";
   try {
     const MyOctokit = Octokit2.plugin(retry);
     const generateBuildMetadata = core.getInput("generate-build-metadata");
@@ -25713,7 +25715,7 @@ async function run() {
         repository.token = globalToken;
       }
     }
-    let path = core.getInput("path");
+    path = core.getInput("path");
     let retries = parseInt(core.getInput("retries"));
     let fetchRetries = parseInt(core.getInput("fetch-retries"));
     let concurrencyLimit = parseInt(core.getInput("concurrency-limit"));
@@ -25753,7 +25755,6 @@ async function run() {
       ["config", "--local", "--unset-all", "http.https://github.com/.extraheader"],
       { cwd: path, ignoreReturnCode: true }
     );
-    let originalOriginUrl = null;
     try {
       originalOriginUrl = await execStdout("git", ["remote", "get-url", "origin"], { cwd: path });
       console.log("[!] Saved original origin URL to restore after processing");
@@ -25762,128 +25763,121 @@ async function run() {
       console.log("[!] No existing origin remote found; nothing to restore afterwards");
     }
     let commitTuple;
-    try {
-      if (mode === "exact") {
-        if (!commitTupleInput) {
-          throw new Error("commit-tuple input is required in exact mode");
-        }
-        commitTuple = CommitTuple.fromString(commitTupleInput);
-        console.log(`[exact] Parsed commit tuple: ${commitTuple.toString()}`);
-        console.log(`[exact] Base SHA: ${commitTuple.baseSha}, PRs: ${commitTuple.prs.length}`);
-      } else {
-        const firstRepo = repositories[0];
-        const firstRemoteUrl = `https://x-access-token:${firstRepo.token}@github.com/${firstRepo.owner}/${firstRepo.repo}.git`;
-        console.log(`[gather] Setting remote to first repo to read base SHA`);
-        await exec.exec("git remote set-url origin", [firstRemoteUrl], { cwd: path });
-        await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
-        const baseSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
-        console.log(`[gather] Base SHA: ${baseSha}`);
-        const gatherResult = await gatherData({
-          repositories,
-          baseSha,
-          retries,
-          concurrencyLimit,
-          primaryRepo: baseRepo || void 0
-        });
-        commitTuple = gatherResult.commitTuple;
-        console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
+    if (mode === "exact") {
+      if (!commitTupleInput) {
+        throw new Error("commit-tuple input is required in exact mode");
       }
-      core.setOutput("commit-tuple", commitTuple.toString());
-      if (mode === "gather_only") {
-        console.log(`[gather_only] Done. commit-tuple: ${commitTuple.toString()}`);
-        if (generateBuildMetadata === "true") {
-          const buildMetadata = { commitTuple: commitTuple.toString() };
-          const p = pathModule.normalize(`${path}/build-metadata.json`);
-          console.log("Writing build metadata to " + p);
-          fs.writeFileSync(p, JSON.stringify(buildMetadata, null, 2));
-        }
-        return;
+      commitTuple = CommitTuple.fromString(commitTupleInput);
+      console.log(`[exact] Parsed commit tuple: ${commitTuple.toString()}`);
+      console.log(`[exact] Base SHA: ${commitTuple.baseSha}, PRs: ${commitTuple.prs.length}`);
+    } else {
+      const firstRepo = repositories[0];
+      const firstRemoteUrl = `https://x-access-token:${firstRepo.token}@github.com/${firstRepo.owner}/${firstRepo.repo}.git`;
+      console.log(`[gather] Setting remote to first repo to read base SHA`);
+      await exec.exec("git remote set-url origin", [firstRemoteUrl], { cwd: path });
+      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+      const baseSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+      console.log(`[gather] Base SHA: ${baseSha}`);
+      const gatherResult = await gatherData({
+        repositories,
+        baseSha,
+        retries,
+        concurrencyLimit,
+        primaryRepo: baseRepo || void 0
+      });
+      commitTuple = gatherResult.commitTuple;
+      console.log(`[gather] CommitTuple: ${commitTuple.toString()}`);
+    }
+    core.setOutput("commit-tuple", commitTuple.toString());
+    if (mode === "gather_only") {
+      console.log(`[gather_only] Done. commit-tuple: ${commitTuple.toString()}`);
+      if (generateBuildMetadata === "true") {
+        const buildMetadata = { commitTuple: commitTuple.toString() };
+        const p = pathModule.normalize(`${path}/build-metadata.json`);
+        console.log("Writing build metadata to " + p);
+        fs.writeFileSync(p, JSON.stringify(buildMetadata, null, 2));
       }
-      {
-        const baseRepoConfig = baseRepo ? repositories.find((r) => `${r.owner}/${r.repo}` === baseRepo) ?? repositories[0] : repositories[0];
-        const verifyRemoteUrl = `https://x-access-token:${baseRepoConfig.token}@github.com/${baseRepoConfig.owner}/${baseRepoConfig.repo}.git`;
-        await exec.exec("git remote set-url origin", [verifyRemoteUrl], { cwd: path });
-        await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
-        const currentHead = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
-        if (currentHead !== commitTuple.baseSha) {
-          throw new Error(
-            `Base SHA mismatch: commit tuple expects ${commitTuple.baseSha} but current HEAD is ${currentHead}. The base branch may have moved since the commit tuple was created.`
-          );
-        }
-        console.log(`[!] Base SHA verified: ${currentHead}`);
+      return;
+    }
+    {
+      const baseRepoConfig = baseRepo ? repositories.find((r) => `${r.owner}/${r.repo}` === baseRepo) ?? repositories[0] : repositories[0];
+      const verifyRemoteUrl = `https://x-access-token:${baseRepoConfig.token}@github.com/${baseRepoConfig.owner}/${baseRepoConfig.repo}.git`;
+      await exec.exec("git remote set-url origin", [verifyRemoteUrl], { cwd: path });
+      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+      const currentHead = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+      if (currentHead !== commitTuple.baseSha) {
+        throw new Error(
+          `Base SHA mismatch: commit tuple expects ${commitTuple.baseSha} but current HEAD is ${currentHead}. The base branch may have moved since the commit tuple was created.`
+        );
       }
-      const octokitsByAuthToken = /* @__PURE__ */ new Map();
-      for (const repository of repositories) {
-        const { repo, token, owner } = repository;
-        const fullRepoName = `${owner}/${repo}`;
-        const isBaseRepo = baseRepo ? fullRepoName === baseRepo : false;
-        const isFirstRepo = repositories.indexOf(repository) === 0;
-        const matchingPrs = commitTuple.prs.filter((pr) => {
-          if (pr.repo) {
-            return pr.repo === repo;
-          }
-          return baseRepo ? isBaseRepo : isFirstRepo;
-        });
-        if (matchingPrs.length === 0) {
-          console.log(`[!] No PRs to merge for ${fullRepoName}, skipping`);
-          continue;
+      console.log(`[!] Base SHA verified: ${currentHead}`);
+    }
+    const octokitsByAuthToken = /* @__PURE__ */ new Map();
+    for (const repository of repositories) {
+      const { repo, token, owner } = repository;
+      const fullRepoName = `${owner}/${repo}`;
+      const isBaseRepo = baseRepo ? fullRepoName === baseRepo : false;
+      const isFirstRepo = repositories.indexOf(repository) === 0;
+      const matchingPrs = commitTuple.prs.filter((pr) => {
+        if (pr.repo) {
+          return pr.repo === repo;
         }
-        console.log(`[!] Processing ${fullRepoName}: ${matchingPrs.length} PRs to merge`);
-        const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-        console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
-        await exec.exec("git remote set-url origin", [remoteUrl], { cwd: path });
-        console.log("[!] Fetching from new origin");
-        await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
-        const abbrevRef = await execStdout("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
-        const baseCommitSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
-        console.log({ abbrevRef, baseCommitSha });
-        const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
-        octokitsByAuthToken.set(token, octokit);
-        const prResponses = await Promise.all(matchingPrs.map(
-          (mr) => limit(async () => {
-            const res = await octokit.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: mr.number
-            });
-            return { prData: res.data, targetSha: mr.sha };
-          })
-        ));
-        const sortedPrs = sortPullRequests(prResponses.map((r) => ({ number: r.prData.number, ...r })));
-        for (const entry of sortedPrs) {
-          const { prData, targetSha } = entry;
-          const prNumber = prData.number;
-          const prBranch = prData.head.ref;
-          const prAuthor = prData.user.login;
-          console.log(`[!] Processing PR #${prNumber} from ${prAuthor} with branch ${prBranch}`);
-          console.log(`[!] Fetching PR #${prNumber} from remote`);
-          await execWithRetry("git", ["fetch", "origin", `pull/${prNumber}/head:${prBranch}`], path, fetchRetries);
-          const currentTipSha = prData.head.sha;
-          if (currentTipSha !== targetSha) {
-            console.log(`[!] Current PR tip (${currentTipSha}) differs from target (${targetSha}). Fetching exact target...`);
-            await execWithRetry("git", ["fetch", "origin", targetSha], path, fetchRetries);
-          }
-          await exec.exec("git", ["update-ref", `refs/heads/${prBranch}`, targetSha], { cwd: path });
-          console.log(`[!] Merging branch ${prBranch} (target: ${targetSha})`);
-          const gitMergeStdout = new streamBuffer.WritableStreamBuffer();
-          const gitMergeStderr = new streamBuffer.WritableStreamBuffer();
-          const gitMergeRes = await exec.exec(`git merge ${prBranch}`, [], {
-            cwd: path,
-            ignoreReturnCode: true,
-            outStream: gitMergeStdout,
-            errStream: gitMergeStderr
+        return baseRepo ? isBaseRepo : isFirstRepo;
+      });
+      if (matchingPrs.length === 0) {
+        console.log(`[!] No PRs to merge for ${fullRepoName}, skipping`);
+        continue;
+      }
+      console.log(`[!] Processing ${fullRepoName}: ${matchingPrs.length} PRs to merge`);
+      const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+      console.log(`[!] Setting remote origin URL to: https://x-access-token:***@github.com/${owner}/${repo}.git`);
+      await exec.exec("git remote set-url origin", [remoteUrl], { cwd: path });
+      console.log("[!] Fetching from new origin");
+      await execWithRetry("git", ["fetch", "origin"], path, fetchRetries);
+      const abbrevRef = await execStdout("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
+      const baseCommitSha = await execStdout("git", ["rev-parse", "HEAD"], { cwd: path });
+      console.log({ abbrevRef, baseCommitSha });
+      const octokit = octokitsByAuthToken.get(token) ?? new MyOctokit({ auth: token, request: { retries } });
+      octokitsByAuthToken.set(token, octokit);
+      const prResponses = await Promise.all(matchingPrs.map(
+        (mr) => limit(async () => {
+          const res = await octokit.rest.pulls.get({
+            owner,
+            repo,
+            pull_number: mr.number
           });
-          if (gitMergeRes !== 0) {
-            const stdout = gitMergeStdout.getContentsAsString("utf8") || "";
-            const stderr = gitMergeStderr.getContentsAsString("utf8") || "";
-            await handleMergeConflict(prNumber, stdout, stderr, path);
-          }
+          return { prData: res.data, targetSha: mr.sha };
+        })
+      ));
+      const sortedPrs = sortPullRequests(prResponses.map((r) => ({ number: r.prData.number, ...r })));
+      for (const entry of sortedPrs) {
+        const { prData, targetSha } = entry;
+        const prNumber = prData.number;
+        const prBranch = prData.head.ref;
+        const prAuthor = prData.user.login;
+        console.log(`[!] Processing PR #${prNumber} from ${prAuthor} with branch ${prBranch}`);
+        console.log(`[!] Fetching PR #${prNumber} from remote`);
+        await execWithRetry("git", ["fetch", "origin", `pull/${prNumber}/head:${prBranch}`], path, fetchRetries);
+        const currentTipSha = prData.head.sha;
+        if (currentTipSha !== targetSha) {
+          console.log(`[!] Current PR tip (${currentTipSha}) differs from target (${targetSha}). Fetching exact target...`);
+          await execWithRetry("git", ["fetch", "origin", targetSha], path, fetchRetries);
         }
-      }
-    } finally {
-      if (originalOriginUrl) {
-        console.log("[!] Restoring original origin URL");
-        await exec.exec("git remote set-url origin", [originalOriginUrl], { cwd: path });
+        await exec.exec("git", ["update-ref", `refs/heads/${prBranch}`, targetSha], { cwd: path });
+        console.log(`[!] Merging branch ${prBranch} (target: ${targetSha})`);
+        const gitMergeStdout = new streamBuffer.WritableStreamBuffer();
+        const gitMergeStderr = new streamBuffer.WritableStreamBuffer();
+        const gitMergeRes = await exec.exec(`git merge ${prBranch}`, [], {
+          cwd: path,
+          ignoreReturnCode: true,
+          outStream: gitMergeStdout,
+          errStream: gitMergeStderr
+        });
+        if (gitMergeRes !== 0) {
+          const stdout = gitMergeStdout.getContentsAsString("utf8") || "";
+          const stderr = gitMergeStderr.getContentsAsString("utf8") || "";
+          await handleMergeConflict(prNumber, stdout, stderr, path);
+        }
       }
     }
     if (generateBuildMetadata === "true") {
@@ -25900,6 +25894,11 @@ async function run() {
   } catch (error) {
     console.error(error);
     core.setFailed(`Action failed with error: ${error}`);
+  } finally {
+    if (originalOriginUrl && path) {
+      console.log("[!] Restoring original origin URL");
+      await exec.exec("git remote set-url origin", [originalOriginUrl], { cwd: path });
+    }
   }
 }
 run();
